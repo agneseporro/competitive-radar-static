@@ -1,0 +1,1520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Competitive Intelligence Radar — Poste Italiane</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#fff;color:#1a1a1a;min-height:100vh}
+:root{
+  --color-background-primary:#fff;--color-background-secondary:#f5f5f4;--color-background-tertiary:#f0efed;
+  --color-background-info:#eff6ff;--color-background-success:#f0fdf4;--color-background-warning:#fffbeb;--color-background-danger:#fef2f2;
+  --color-text-primary:#1a1a1a;--color-text-secondary:#6b7280;--color-text-tertiary:#9ca3af;
+  --color-text-info:#1d4ed8;--color-text-success:#15803d;--color-text-warning:#b45309;--color-text-danger:#dc2626;
+  --color-border-tertiary:rgba(0,0,0,0.1);--color-border-secondary:rgba(0,0,0,0.2);--color-border-primary:rgba(0,0,0,0.35);
+  --color-border-info:#93c5fd;--color-border-success:#86efac;--color-border-warning:#fcd34d;--color-border-danger:#fca5a5;
+  --font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--font-mono:'SF Mono','Fira Code',monospace;
+  --border-radius-md:8px;--border-radius-lg:12px;--border-radius-xl:16px;
+}
+@media(prefers-color-scheme:dark){:root{
+  --color-background-primary:#1c1c1e;--color-background-secondary:#2c2c2e;--color-background-tertiary:#3a3a3c;
+  --color-background-info:#1e3a5f;--color-background-success:#14432a;--color-background-warning:#3d2c00;--color-background-danger:#450a0a;
+  --color-text-primary:#f5f5f5;--color-text-secondary:#a1a1aa;--color-text-tertiary:#71717a;
+  --color-text-info:#93c5fd;--color-text-success:#86efac;--color-text-warning:#fcd34d;--color-text-danger:#fca5a5;
+  --color-border-tertiary:rgba(255,255,255,0.1);--color-border-secondary:rgba(255,255,255,0.2);--color-border-primary:rgba(255,255,255,0.35);
+}body{background:#1c1c1e}}
+input,select{font-family:var(--font-sans);color:var(--color-text-primary);background:var(--color-background-primary);
+  border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);outline:none}
+input:focus,select:focus{border-color:var(--color-border-primary)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+const { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = Recharts;
+
+window.storage = {
+  get: async (key) => { const v=localStorage.getItem(key); if(v===null) throw new Error('not found'); return {key,value:v}; },
+  set: async (key,value) => { localStorage.setItem(key,value); return {key,value}; },
+  delete: async (key) => { localStorage.removeItem(key); return {key,deleted:true}; },
+  list: async (prefix) => { return {keys:Object.keys(localStorage).filter(k=>!prefix||k.startsWith(prefix))}; }
+};
+
+
+
+
+const PEERS = ["Poste Italiane","PostNL","Bpost","Österreichische Post","InPost"];
+const PEER_COLORS = {
+  "Poste Italiane":"#FFD700","PostNL":"#FF8C42","Bpost":"#E05252",
+  "Österreichische Post":"#A78BFA","InPost":"#60A5FA"
+};
+
+const EXTRACTION_PROMPT = `You are a financial analyst specializing in postal and logistics companies. Extract structured data from this document and return ONLY a valid JSON object. No markdown code blocks, no explanation, ONLY the raw JSON.
+
+FOCUS: prioritize Mail & Parcel / Parcels & Distribution segment data. If segment data is not available, use group-level data and set segment_available to false.
+Use null for missing values. All financial figures in millions of EUR.
+
+{
+  "company": "exact company name from document",
+  "year": 2024,
+  "country": "country",
+  "document_type": "annual_report|investor_presentation|capital_markets_day|quarterly",
+  "source_period": "e.g. FY2024 or Q4 2025",
+  "segment_available": true,
+  "segment_name": "exact segment name as written in document e.g. Mail Parcels & Distribution",
+  "segment_revenue_m": number,
+  "segment_revenue_growth_pct": number,
+  "segment_ebit_m": number,
+  "segment_ebit_margin_pct": number,
+  "segment_revenue_pct_of_group": number,
+  "group_revenue_m": number,
+  "group_ebit_margin_pct": number,
+  "parcel_volume_m": number,
+  "parcel_growth_pct": number,
+  "mail_volume_decline_pct": number,
+  "capex_m": number,
+  "employees": number,
+  "mail_to_parcel_shift": "description of structural shift from mail to parcel or null",
+  "strategic_priorities": ["max 5 short priorities focused on mail/parcel"],
+  "key_risks": ["max 3 risks for mail/parcel segment"],
+  "key_opportunities": ["max 3 opportunities for mail/parcel segment"],
+  "ai_tech_highlights": "AI/automation/tech investments in logistics or null",
+  "esg_highlights": "key ESG commitment related to delivery or null",
+  "competitive_signals": ["max 3 competitive moves relevant to mail/parcel"]
+}`;
+
+const DEEP_ANALYSIS_PROMPT = `You are an expert financial analyst. You will be provided with company annual reports in PDF format (2022, 2023, 2024, and 2025 if available). Your task is to produce a structured multi-year financial analysis focused exclusively on the Mail & Parcel / Parcels & Distribution segment (or closest equivalent). Use consolidated data only as a fallback if segment data is unavailable, and state this clearly.
+
+Work exclusively with information in the provided documents. Do not invent, infer, or assume data not supported by the reports. If information is not available, state this explicitly.
+
+Required output structure — respond in plain text with clear section headers:
+
+## 1. GENERAL OVERVIEW
+For each available year, provide a brief overview of performance focusing on: growth/stability/contraction, major events, key operational/strategic developments. Include competitor comparisons only if explicitly mentioned in the reports.
+
+## 2. ANALYSIS BY AREA
+For each available year, organize into four areas. For each ratio: state whether reported directly or calculated; give the numerical value and unit; include a brief interpretation (max 2 lines). If a ratio cannot be calculated due to missing data, write "Data not available."
+
+**A. Growth**
+- Revenue Growth (%)
+- Growth rate of EBITDA or EBIT (specify which)
+
+**B. Solidity**
+- Gearing Ratio = Net Financial Position / Equity
+- Debt-to-EBITDA = Net Financial Position / EBITDA
+
+**C. Liquidity**
+- Current Ratio = Current Assets / Current Liabilities
+- Quick Ratio = (Current Assets – Inventories) / Current Liabilities
+
+**D. Profitability**
+- RONA = EBIT / Net Assets
+- ROE = Net Income / Equity
+
+## 3. THREE-YEAR COMPARISON
+For each of the four areas (Growth, Solidity, Liquidity, Profitability), highlight: improvements, deteriorations, key trends, structural changes. Focus on leverage patterns, margin changes, liquidity evolution, capital structure shifts.
+
+## 4. THREE-YEAR FORECAST
+Develop three scenarios grounded in the historical evidence:
+- **Positive scenario** (expansion): favorable macro/market conditions
+- **Neutral scenario**: stable conditions  
+- **Negative scenario** (recession): difficult macro and weaker demand
+
+For each scenario and each of the four dimensions (Growth, Solidity, Liquidity, Profitability), indicate: expected direction of change, expected intensity, key drivers. Link each forecast explicitly to historical data from the reports.`;
+
+const ESG_ANALYSIS_PROMPT = `You are an expert in corporate strategy, sustainability and ESG analysis. You will be provided with ESG reports, sustainability reports, and/or strategic documents from a postal/logistics company. Produce a structured strategic and non-financial analysis.
+
+Work exclusively with information in the provided documents. Do not invent or assume data not supported by the reports. If information is not available, state this explicitly.
+
+Required output structure — respond in plain text with clear section headers:
+
+## 1. STRATEGIC POSITIONING
+For each available year/document: summarize the company's strategic priorities, vision, and competitive positioning in the mail/parcel segment. What are the declared strategic objectives? What markets and customer segments are targeted? What differentiators are highlighted?
+
+## 2. ESG PERFORMANCE
+For each available year/document, analyze:
+
+**A. Environmental**
+- CO₂ / emissions targets and progress (Scope 1, 2, 3 where available)
+- Renewable energy usage (%)
+- Fleet electrification progress
+- Packaging and waste reduction initiatives
+- Any science-based targets (SBTi) or net-zero commitments
+
+**B. Social**
+- Employee headcount and trends
+- Employee engagement / satisfaction scores
+- Health & safety metrics (injury rates, absenteeism)
+- Diversity & inclusion metrics (gender, leadership diversity)
+- Community impact programs
+
+**C. Governance**
+- Board composition and independence
+- Executive remuneration structure (fixed vs variable, ESG-linked)
+- Anti-corruption and compliance policies
+- Data privacy and cybersecurity governance
+- Shareholder structure and any controlling shareholders
+
+## 3. INNOVATION & TECHNOLOGY
+- Key technology investments (AI, automation, robotics, data analytics)
+- Digital transformation initiatives
+- New services or business model innovations
+- Patents or R&D spend if disclosed
+
+## 4. COMPETITIVE & MARKET SIGNALS
+- Market share data or competitive positioning statements
+- Customer satisfaction scores (NPS, CSAT)
+- Partnerships, acquisitions, or strategic alliances announced
+- Regulatory risks or opportunities mentioned
+- Any explicit references to competitors
+
+## 5. MULTI-YEAR COMPARISON & OUTLOOK
+Compare the evolution of ESG performance and strategic priorities across the available years. Highlight: improvements, gaps, changes in strategic direction. Identify the 3 most important non-financial risks and 3 most important opportunities for the mail/parcel segment based on the documents.`;
+
+const ESG_EXTRACT_PROMPT = (year) => `This is a ${year} ESG, sustainability, or strategic document. Extract all relevant non-financial information including: ESG metrics (emissions, energy, fleet electrification, employee data, safety, diversity, governance), strategic priorities, technology investments, competitive positioning, innovation initiatives, customer satisfaction data, and any forward-looking commitments. Be precise with numbers and targets. State "not found" if data is missing.`;
+
+const ESG_LINKS = {
+  "Poste Italiane": {
+    2025: null,
+    2024: "https://www.posteitaliane.it/files/1476637295199/Annual-Report-2024-ENG.pdf",
+    2023: "https://www.posteitaliane.it/files/1476611806936/Annual-report-2023.pdf",
+    2022: "https://www.posteitaliane.it/files/1476584066849/Annual-Financial-Report-2022.pdf",
+  },
+  "PostNL": {
+    2025: "https://annualreport.postnl.nl/app/uploads/2026/02/PostNL-Annual-Report-2025.pdf",
+    2024: "https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2024.pdf",
+    2023: "https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2023.pdf",
+    2022: "https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2022.pdf",
+  },
+  "Bpost": {
+    2025: null,
+    2024: "https://bpostgroup.com/sites/default/files/2025-03/24099_BPOST_jaarverslag_2024_ENG.pdf",
+    2023: "https://bpostgroup.com/sites/default/files/2024-03/Annualreport2023_feb24_ENG_0.pdf",
+    2022: "https://bpostgroup.com/sites/default/files/2023-09/22118_BPOST_FinancieelJaarverslag2022_feb23_ENG.pdf",
+  },
+  "Österreichische Post": {
+    2025: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2025.pdf",
+    2024: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2024.pdf",
+    2023: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Sustainability-Report-2023.pdf",
+    2022: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Sustainability-Report-2022.pdf",
+  },
+  "InPost": {
+    2025: "https://inpost.eu/sites/default/files/2026-03/InPost_Group_IAR_2025_0.pdf",
+    2024: "https://inpost.eu/sites/default/files/2025-03/InPost%20Raport%202024s.pdf",
+    2023: "https://inpost.eu/sites/default/files/2024-03/IAR%20InPost%202023.pdf",
+    2022: null,
+  },
+};
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState("upload");
+  const [database, setDatabase] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState({ msg: "", type: "info" });
+  const [extractionResult, setExtractionResult] = useState(null);
+  const [selectedPeer, setSelectedPeer] = useState("PostNL");
+  const [forecast, setForecast] = useState(null);
+  const [briefing, setBriefing] = useState(null);
+  const [forecastDbVersion, setForecastDbVersion] = useState(0);
+  const [briefingDbVersion, setBriefingDbVersion] = useState(0);
+  const [dbVersion, setDbVersion] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
+  const [pdfUrl, setPdfUrl] = useState("");
+  const [inputMode, setInputMode] = useState("url");
+  const [analysisMode, setAnalysisMode] = useState("single");
+  const [multiUrls, setMultiUrls] = useState({ 2022: "", 2023: "", 2024: "", 2025: "" });
+  const [esgUrls, setEsgUrls] = useState({ 2022: "", 2023: "", 2024: "", 2025: "" });
+  const [deepAnalysis, setDeepAnalysis] = useState({});
+  const [esgAnalysis, setEsgAnalysis] = useState({});
+  const [deepAnalysisPeer, setDeepAnalysisPeer] = useState(null);
+  const [deepTab, setDeepTab] = useState("financial");
+  const fileInputRef = useRef();
+
+  useEffect(() => { loadDB(); }, []);
+
+  const loadDB = async () => {
+    try { const r = await window.storage.get("ci_db_v2"); if (r?.value) setDatabase(JSON.parse(r.value)); } catch {}
+    try { const r = await window.storage.get("ci_deep_analyses"); if (r?.value) setDeepAnalysis(JSON.parse(r.value)); } catch {}
+    try { const r = await window.storage.get("ci_esg_analyses"); if (r?.value) setEsgAnalysis(JSON.parse(r.value)); } catch {}
+  };
+
+  const saveDB = async (data) => {
+    try { await window.storage.set("ci_db_v2", JSON.stringify(data)); } catch {}
+  };
+
+  const setMsg = (msg, type = "info") => setStatus({ msg, type });
+
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+  const fetchPdfAsBase64 = async (url) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch PDF: ${res.status}`);
+    const buf = await res.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return { b64: btoa(binary), bytes: buf };
+  };
+
+  const splitAndExtract = async (url) => {
+    setMsg("PDF too large — downloading and splitting...", "info");
+    const { PDFDocument } = await import("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.esm.min.js");
+    const { b64, bytes } = await fetchPdfAsBase64(url);
+    const srcDoc = await PDFDocument.load(bytes);
+    const totalPages = srcDoc.getPageCount();
+    setMsg(`Splitting ${totalPages} pages into 2 halves...`, "info");
+    const mid = Math.floor(totalPages / 2);
+    const results = [];
+    for (let half = 0; half < 2; half++) {
+      const start = half === 0 ? 0 : mid;
+      const end = half === 0 ? mid : totalPages;
+      const chunk = await PDFDocument.create();
+      const pages = await chunk.copyPages(srcDoc, Array.from({ length: end - start }, (_, i) => start + i));
+      pages.forEach(p => chunk.addPage(p));
+      const chunkBytes = await chunk.save();
+      let bin = "";
+      new Uint8Array(chunkBytes).forEach(b => bin += String.fromCharCode(b));
+      const chunkB64 = btoa(bin);
+      setMsg(`Extracting half ${half + 1}/2 (pages ${start + 1}–${end})...`, "info");
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1200,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "document", source: { type: "base64", media_type: "application/pdf", data: chunkB64 } },
+              { type: "text", text: `This is part ${half + 1} of 2 of an annual report. Extract all available Mail & Parcel segment financial data. Focus on: revenues, EBIT, margins, parcel volumes, mail volumes, capex, employees, strategic priorities, key risks, competitive signals, AI/tech highlights. Return structured plain text, label each figure clearly. State "not found in this section" if data is missing.` }
+            ]
+          }]
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      results.push(data.content?.find(c => c.type === "text")?.text || "");
+    }
+    setMsg("Merging and structuring extracted data...", "info");
+    const mergeRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        messages: [{
+          role: "user",
+          content: `You extracted data from two halves of an annual report. Merge into one JSON. Return ONLY raw JSON, no markdown.
+
+PART 1:\n${results[0]}\n\nPART 2:\n${results[1]}
+
+${EXTRACTION_PROMPT}`
+        }]
+      })
+    });
+    const mergeData = await mergeRes.json();
+    if (mergeData.error) throw new Error(mergeData.error.message);
+    return mergeData.content?.find(c => c.type === "text")?.text || "";
+  };
+
+  const processViaUrl = async (url) => {
+    if (!url || !url.startsWith("http")) { setMsg("Insert a valid URL starting with https://", "error"); return; }
+    setLoading(true);
+    setMsg("Sending URL to Claude API...", "info");
+    try {
+      let text;
+      try {
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1000,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "document", source: { type: "url", url: url } },
+                { type: "text", text: EXTRACTION_PROMPT }
+              ]
+            }]
+          })
+        });
+        const data = await res.json();
+        if (data.error?.message?.includes("600") || data.error?.message?.includes("pages")) {
+          text = await splitAndExtract(url);
+        } else {
+          if (data.error) throw new Error(data.error.message);
+          text = data.content?.find(c => c.type === "text")?.text || "";
+        }
+      } catch (e) {
+        if (e.message?.includes("600") || e.message?.includes("pages")) {
+          text = await splitAndExtract(url);
+        } else throw e;
+      }
+      const extracted = JSON.parse(text.replace(/```json|```/g, "").trim());
+      extracted.company = selectedPeer;
+      extracted._sourceUrl = url;
+      extracted._extractedAt = new Date().toISOString();
+      setExtractionResult(extracted);
+      setPdfUrl("");
+      setMsg("Extraction complete! Review and save.", "success");
+    } catch (e) {
+      setMsg("Error: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const processFile = async (file) => {
+    if (!file || file.type !== "application/pdf") { setMsg("Please upload a PDF file", "error"); return; }
+    setLoading(true);
+    setMsg("Converting PDF... (if it fails use URL mode for large files)", "info");
+    try {
+      const b64 = await fileToBase64(file);
+      setMsg("Sending to Claude API for extraction...", "info");
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } },
+              { type: "text", text: EXTRACTION_PROMPT }
+            ]
+          }]
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      const text = data.content?.find(c => c.type === "text")?.text || "";
+      const extracted = JSON.parse(text.replace(/```json|```/g, "").trim());
+      extracted.company = selectedPeer;
+      extracted._fileName = file.name;
+      extracted._extractedAt = new Date().toISOString();
+      setExtractionResult(extracted);
+      setMsg("Extraction complete! Review and save.", "success");
+    } catch (e) {
+      if (e.message?.includes("size") || e.message?.includes("large")) {
+        setMsg("File too large — switch to URL mode and paste the direct PDF link.", "error");
+      } else {
+        setMsg("Error: " + e.message, "error");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const EXTRACT_PER_YEAR_PROMPT = (year) => `You are an expert financial analyst. Extract key financial data from this ${year} annual report, focusing on the Mail & Parcel / Parcels & Distribution segment (or closest equivalent). If segment data is unavailable, use consolidated data and note this.
+
+Return a structured plain-text summary covering:
+1. SEGMENT OVERVIEW: segment name used, revenue (€M), revenue growth (%), EBIT (€M), EBIT margin (%), parcel volumes, mail volume change
+2. BALANCE SHEET ITEMS: current assets, current liabilities, inventories, equity, net financial position (debt minus cash), EBITDA
+3. KEY EVENTS: major strategic events, acquisitions, structural changes in ${year}
+4. RATIOS (if explicitly reported): any financial ratios disclosed in the report
+
+Be precise with numbers. State "not available" if data is missing. All figures in EUR millions.`;
+
+  const runDeepAnalysis = async () => {
+    const urls = Object.entries(multiUrls).filter(([, v]) => v.trim().startsWith("http"));
+    if (urls.length < 2) { setMsg("Add at least 2 annual report URLs to run the deep analysis.", "error"); return; }
+    setLoading(true);
+    const yearlyExtracts = {};
+    try {
+      // Step 1: extract each year separately (one PDF per call)
+      for (let i = 0; i < urls.length; i++) {
+        const [year, url] = urls[i];
+        setMsg(`Extracting ${year} data for ${selectedPeer} (${i+1}/${urls.length})...`, "info");
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1500,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "document", source: { type: "url", url: url.trim() } },
+                { type: "text", text: EXTRACT_PER_YEAR_PROMPT(year) }
+              ]
+            }]
+          })
+        });
+        const data = await res.json();
+        if (data.error?.message?.includes("600") || data.error?.message?.includes("pages")) {
+          setMsg(`${year} PDF too large — splitting...`, "info");
+          const { PDFDocument } = await import("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.esm.min.js");
+          const fetchRes = await fetch(url.trim());
+          const buf = await fetchRes.arrayBuffer();
+          const srcDoc = await PDFDocument.load(buf);
+          const totalPages = srcDoc.getPageCount();
+          const mid = Math.floor(totalPages / 2);
+          const parts = [];
+          for (let half = 0; half < 2; half++) {
+            const start = half === 0 ? 0 : mid;
+            const end = half === 0 ? mid : totalPages;
+            const chunk = await PDFDocument.create();
+            const pages = await chunk.copyPages(srcDoc, Array.from({ length: end - start }, (_, k) => start + k));
+            pages.forEach(p => chunk.addPage(p));
+            const chunkBytes = await chunk.save();
+            let bin = ""; new Uint8Array(chunkBytes).forEach(b => bin += String.fromCharCode(b));
+            const chunkB64 = btoa(bin);
+            setMsg(`${year}: extracting half ${half+1}/2...`, "info");
+            const pr = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: chunkB64 } }, { type: "text", text: `Part ${half+1}/2 of ${year} annual report. Extract all Mail & Parcel segment financial data (revenues, EBIT, margins, volumes, balance sheet items, key events). Be precise with numbers.` }] }] })
+            });
+            const pd = await pr.json();
+            parts.push(pd.content?.find(c => c.type === "text")?.text || "");
+          }
+          yearlyExtracts[year] = `[Split extraction]\nPART 1:\n${parts[0]}\n\nPART 2:\n${parts[1]}`;
+        } else if (data.error) {
+          yearlyExtracts[year] = `[Extraction failed: ${data.error.message}]`;
+        } else {
+          yearlyExtracts[year] = data.content?.find(c => c.type === "text")?.text || "[No data extracted]";
+        }
+      }
+
+      // Step 2: synthesize all years together
+      setMsg(`Synthesising ${urls.length} years of data for ${selectedPeer}...`, "info");
+      const synthContent = `You are an expert financial analyst. Below are financial data extracts from ${selectedPeer}'s annual reports for the available years. Produce the structured analysis exactly as specified.
+
+${Object.entries(yearlyExtracts).map(([y, t]) => `=== ${y} ===\n${t}`).join("\n\n")}
+
+${DEEP_ANALYSIS_PROMPT}`;
+
+      const synthRes = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 4000,
+          messages: [{ role: "user", content: synthContent }]
+        })
+      });
+      const synthData = await synthRes.json();
+      if (synthData.error) throw new Error(synthData.error.message);
+      const finalText = synthData.content?.find(c => c.type === "text")?.text || "";
+      const newAnalyses = { ...deepAnalysis, [selectedPeer]: { text: finalText, peer: selectedPeer, years: urls.map(([y]) => y), generatedAt: new Date().toISOString() } };
+      setDeepAnalysis(newAnalyses);
+      setDeepAnalysisPeer(selectedPeer);
+      try { await window.storage.set("ci_deep_analyses", JSON.stringify(newAnalyses)); } catch {}
+      setMsg(`Deep analysis for ${selectedPeer} complete!`, "success");
+      setActiveTab("deep");
+    } catch (e) {
+      setMsg("Error: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runEsgAnalysis = async () => {
+    const urls = Object.entries(esgUrls).filter(([, v]) => v.trim().startsWith("http"));
+    if (urls.length < 1) { setMsg("Add at least 1 ESG/sustainability report URL.", "error"); return; }
+    setLoading(true);
+    const yearlyExtracts = {};
+    try {
+      for (let i = 0; i < urls.length; i++) {
+        const [year, url] = urls[i];
+        setMsg(`Extracting ${year} ESG data for ${selectedPeer} (${i+1}/${urls.length})...`, "info");
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1500,
+            messages: [{ role: "user", content: [
+              { type: "document", source: { type: "url", url: url.trim() } },
+              { type: "text", text: ESG_EXTRACT_PROMPT(year) }
+            ]}]
+          })
+        });
+        const data = await res.json();
+        if (data.error?.message?.includes("600") || data.error?.message?.includes("pages")) {
+          setMsg(`${year} PDF too large — splitting...`, "info");
+          const { PDFDocument } = await import("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.esm.min.js");
+          const fetchRes = await fetch(url.trim());
+          const buf = await fetchRes.arrayBuffer();
+          const srcDoc = await PDFDocument.load(buf);
+          const mid = Math.floor(srcDoc.getPageCount() / 2);
+          const parts = [];
+          for (let half = 0; half < 2; half++) {
+            const start = half === 0 ? 0 : mid;
+            const end = half === 0 ? mid : srcDoc.getPageCount();
+            const chunk = await PDFDocument.create();
+            const pages = await chunk.copyPages(srcDoc, Array.from({ length: end - start }, (_, k) => start + k));
+            pages.forEach(p => chunk.addPage(p));
+            const chunkBytes = await chunk.save();
+            let bin = ""; new Uint8Array(chunkBytes).forEach(b => bin += String.fromCharCode(b));
+            const pr = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: btoa(bin) } }, { type: "text", text: `Part ${half+1}/2 of ${year} ESG/sustainability report. Extract ESG metrics, strategic priorities, technology investments, competitive positioning, sustainability targets, employee data, governance info.` }] }] })
+            });
+            const pd = await pr.json();
+            parts.push(pd.content?.find(c => c.type === "text")?.text || "");
+          }
+          yearlyExtracts[year] = `[Split]\nPART 1:\n${parts[0]}\nPART 2:\n${parts[1]}`;
+        } else if (data.error) {
+          yearlyExtracts[year] = `[Failed: ${data.error.message}]`;
+        } else {
+          yearlyExtracts[year] = data.content?.find(c => c.type === "text")?.text || "[No data]";
+        }
+      }
+      setMsg(`Synthesising ESG analysis for ${selectedPeer}...`, "info");
+      const synthContent = `You are an expert in corporate strategy and ESG. Below are extracts from ${selectedPeer}'s sustainability and strategic reports. Produce the structured analysis exactly as specified.
+
+${Object.entries(yearlyExtracts).map(([y, t]) => `=== ${y} ===\n${t}`).join("\n\n")}
+
+${ESG_ANALYSIS_PROMPT}`;
+      const synthRes = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 4000, messages: [{ role: "user", content: synthContent }] })
+      });
+      const synthData = await synthRes.json();
+      if (synthData.error) throw new Error(synthData.error.message);
+      const finalText = synthData.content?.find(c => c.type === "text")?.text || "";
+      const newAnalyses = { ...esgAnalysis, [selectedPeer]: { text: finalText, peer: selectedPeer, years: urls.map(([y]) => y), generatedAt: new Date().toISOString() } };
+      setEsgAnalysis(newAnalyses);
+      setDeepAnalysisPeer(selectedPeer);
+      setDeepTab("esg");
+      try { await window.storage.set("ci_esg_analyses", JSON.stringify(newAnalyses)); } catch {}
+      setMsg(`Strategic & ESG analysis for ${selectedPeer} complete!`, "success");
+      setActiveTab("deep");
+    } catch (e) {
+      setMsg("Error: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveRecord = async () => {
+    if (!extractionResult) return;
+    const newDb = [
+      ...database.filter(r => !(r.company === extractionResult.company && r.year === extractionResult.year)),
+      extractionResult
+    ].sort((a, b) => a.company.localeCompare(b.company) || a.year - b.year);
+    setDatabase(newDb);
+    setDbVersion(v => v + 1);
+    await saveDB(newDb);
+    setExtractionResult(null);
+    setMsg("Saved to database!", "success");
+    setActiveTab("database");
+  };
+
+  const deleteRecord = async (company, year) => {
+    const newDb = database.filter(r => !(r.company === company && r.year === year));
+    setDatabase(newDb);
+    setDbVersion(v => v + 1);
+    await saveDB(newDb);
+  };
+
+  const clearDatabase = async () => {
+    setDatabase([]); setForecast(null); setBriefing(null);
+    setDeepAnalysis({}); setEsgAnalysis({}); setDeepAnalysisPeer(null);
+    setDbVersion(0); setForecastDbVersion(0); setBriefingDbVersion(0);
+    try { await window.storage.delete("ci_db_v2"); } catch {}
+    try { await window.storage.delete("ci_deep_analyses"); } catch {}
+    try { await window.storage.delete("ci_esg_analyses"); } catch {}
+    setMsg("Database cleared. Ready for new documents.", "success");
+  };
+
+  const generateForecast = async () => {
+    if (database.length === 0) return;
+    setLoading(true);
+    setMsg("Claude is generating forecast scenarios...", "info");
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          messages: [{
+            role: "user",
+            content: `Senior financial analyst. Generate 3 scenarios for Poste Italiane MAIL & PARCEL segment 2025-2028.
+
+GEOGRAPHIC MARKET: Italy only. Poste Italiane does not operate internationally in mail/parcel.
+
+COMPETITIVE CONTEXT — THREE TIERS:
+1. BENCHMARK PEERS (strategic reference, not direct Italy competitors): PostNL, Bpost, Austrian Post — incumbent postal operators who completed the mail→parcel shift. Show where Poste can go.
+2. DIRECT ITALIAN COMPETITORS (real market threat): Bartolini/BRT (~25% Italy parcel share), GLS Italia (~15%). These compete head-on in Italy B2B and B2C parcel.
+3. DISRUPTORS (structural threat): InPost entering Italy fast (7.2M parcels in 2024, +47% YoY), Amazon Logistics (vertical integration, fulfillment+delivery, no intermediaries).
+
+POSTE ITALIANE MAIL & PARCEL BASELINE (FY2024):
+- Segment revenue: €3,843M (+2.6% y/y), ~30.5% of group
+- Italy parcel market share: ~30% (No.1 operator)
+- Parcel volumes: ~349M (+4.7% y/y), e-commerce driven
+- Mail volumes: structural decline ~-3% y/y
+- EBIT: improving toward break-even (from -€500M in 2017, adj. break-even 2025)
+- USO obligation: universal service operator, mandated coverage across Italy
+- Network: 13k post offices, 95% population coverage, 49k third-party PUDO points
+
+PEER SEGMENT DATA:
+${JSON.stringify(database.map(r => ({ company: r.company, year: r.year, tier: ["PostNL","Bpost","Österreichische Post"].includes(r.company) ? "benchmark" : "disruptor", segment_revenue_m: r.segment_revenue_m ?? r.revenue_m, segment_growth_pct: r.segment_revenue_growth_pct ?? r.revenue_growth_pct, segment_ebit_margin: r.segment_ebit_margin_pct ?? r.ebit_margin_pct, parcel_growth_pct: r.parcel_growth_pct, mail_decline_pct: r.mail_volume_decline_pct, strategic_priorities: r.strategic_priorities?.slice(0,2) })))}
+
+Return ONLY this exact JSON, no markdown, no extra text:
+{"key_assumptions":["a1","a2","a3"],"peer_insights":["i1","i2"],"scenarios":{"worst":{"label":"Worst Case","description":"short sentence","revenues":{"2025":0,"2026":0,"2027":0,"2028":0},"ebit_margin_2028":0,"key_drivers":["d1","d2","d3"]},"neutral":{"label":"Neutral Case","description":"short sentence","revenues":{"2025":0,"2026":0,"2027":0,"2028":0},"ebit_margin_2028":0,"key_drivers":["d1","d2","d3"]},"best":{"label":"Best Case","description":"short sentence","revenues":{"2025":0,"2026":0,"2027":0,"2028":0},"ebit_margin_2028":0,"key_drivers":["d1","d2","d3"]}}}`
+          }]
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      const text = data.content?.find(c => c.type === "text")?.text || "";
+      let clean = text.replace(/```json|```/g, "").trim();
+      // attempt to repair truncated JSON by finding last complete field
+      let parsed;
+      try {
+        parsed = JSON.parse(clean);
+      } catch {
+        // find last valid closing brace
+        const lastBrace = clean.lastIndexOf("}");
+        if (lastBrace > 0) {
+          let repaired = clean.slice(0, lastBrace + 1);
+          // close any open braces
+          const opens = (repaired.match(/{/g) || []).length;
+          const closes = (repaired.match(/}/g) || []).length;
+          for (let i = 0; i < opens - closes; i++) repaired += "}";
+          parsed = JSON.parse(repaired);
+        } else throw new Error("Could not parse response. Try again.");
+      }
+      setForecast(parsed);
+      setForecastDbVersion(dbVersion);
+      setMsg("Forecast ready!", "success");
+    } catch (e) {
+      setMsg("Error: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generateBriefing = async () => {
+    if (database.length === 0) return;
+    setLoading(true);
+    setMsg("Claude is writing the executive briefing...", "info");
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          messages: [{
+            role: "user",
+            content: `You are Head of IR at Poste Italiane. Write a competitive intelligence briefing for the CFO on the MAIL & PARCEL segment.
+
+GEOGRAPHIC MARKET: Italy only. Three competitive tiers:
+- TIER 1 BENCHMARKS (not Italy competitors, strategic reference): PostNL, Bpost, Austrian Post — show the mail→parcel transition path
+- TIER 2 DIRECT COMPETITORS in Italy: Bartolini/BRT (~25% parcel share), GLS Italia (~15%)
+- TIER 3 DISRUPTORS: InPost (Italy volumes +47% YoY in 2024, locker model), Amazon Logistics (vertical integration)
+
+POSTE ITALIANE: No.1 Italy parcel operator (~30% share), 349M parcels, €3,843M segment revenue, EBIT toward break-even, 13k post offices, USO obligations, 95% population coverage.
+
+PEER DATA: ${JSON.stringify(database.map(r => ({ company: r.company, tier: ["PostNL","Bpost","Österreichische Post"].includes(r.company) ? "benchmark" : "disruptor", year: r.year, segment_revenue_m: r.segment_revenue_m ?? r.revenue_m, segment_growth: r.segment_revenue_growth_pct ?? r.revenue_growth_pct, ebit_margin: r.segment_ebit_margin_pct ?? r.ebit_margin_pct, parcel_growth: r.parcel_growth_pct, mail_decline: r.mail_volume_decline_pct, strategic_priorities: r.strategic_priorities?.slice(0,3), competitive_signals: r.competitive_signals?.slice(0,2) })))}
+
+Write a structured briefing (max 400 words) with:
+## ITALIAN MAIL & PARCEL MARKET
+## COMPETITIVE POSITIONING (vs each tier)
+## KEY THREATS & OPPORTUNITIES
+## TOP 3 RECOMMENDED ACTIONS
+
+Be direct. Reference specific numbers. Distinguish clearly between benchmark learnings and direct competitive threats.`
+          }]
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      const text = data.content?.find(c => c.type === "text")?.text || "";
+      setBriefing(text);
+      setBriefingDbVersion(dbVersion);
+      setMsg("Briefing ready!", "success");
+    } catch (e) {
+      setMsg("Error: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const companies = [...new Set(database.map(r => r.company))];
+  const barData = companies.map(c => {
+    const latest = database.filter(r => r.company === c).sort((a, b) => b.year - a.year)[0];
+    return {
+      name: c.length > 12 ? c.split(" ")[0] : c,
+      revenue: latest?.segment_revenue_m ?? latest?.revenue_m ?? 0,
+      ebit_margin: latest?.segment_ebit_margin_pct ?? latest?.ebit_margin_pct ?? 0,
+      parcel_growth: latest?.parcel_growth_pct ?? 0,
+      mail_decline: latest?.mail_volume_decline_pct ?? 0,
+      fill: PEER_COLORS[c] || "#888"
+    };
+  });
+
+  const forecastChartData = forecast ? ["2025","2026","2027","2028"].map(year => ({
+    year,
+    "Worst Case": forecast.scenarios?.worst?.revenues?.[year],
+    "Neutral Case": forecast.scenarios?.neutral?.revenues?.[year],
+    "Best Case": forecast.scenarios?.best?.revenues?.[year],
+  })) : [];
+
+  const tabs = [
+    { id: "upload", label: "Upload & Extract" },
+    { id: "database", label: `Database (${database.length})` },
+    { id: "analysis", label: "Analysis" },
+    { id: "deep", label: `Deep Analysis${(Object.keys(deepAnalysis).length + Object.keys(esgAnalysis).length) > 0 ? ` (${Object.keys(deepAnalysis).length}F+${Object.keys(esgAnalysis).length}E)` : ""}` },
+    { id: "forecast", label: "Forecast" },
+    { id: "briefing", label: "Briefing" },
+  ];
+
+  const statusColors = {
+    info: { bg: "var(--color-background-info)", color: "var(--color-text-info)" },
+    success: { bg: "var(--color-background-success)", color: "var(--color-text-success)" },
+    error: { bg: "var(--color-background-danger)", color: "var(--color-text-danger)" },
+  };
+
+  return (
+    <div style={{ fontFamily: "var(--font-sans)", maxWidth: "900px", margin: "0 auto", padding: "1.25rem 1rem" }}>
+
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "1.5rem" }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <div style={{ width: "24px", height: "24px", background: "#FFD700", borderRadius: "4px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ fontSize: "12px", fontWeight: 700, color: "#1a1a1a" }}>PI</span>
+            </div>
+            <h1 style={{ fontSize: "18px", fontWeight: 500, margin: 0, color: "var(--color-text-primary)" }}>
+              Competitive Intelligence Radar
+            </h1>
+          </div>
+          <p style={{ fontSize: "12px", color: "var(--color-text-tertiary)", margin: 0 }}>
+            Poste Italiane · Logistics Segment · Powered by Claude AI
+          </p>
+        </div>
+        {loading && (
+          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", padding: "6px 12px", borderRadius: "20px" }}>
+            ⟳ Processing...
+          </div>
+        )}
+      </div>
+
+      {status.msg && (
+        <div style={{ background: statusColors[status.type]?.bg, color: statusColors[status.type]?.color, padding: "8px 14px", borderRadius: "var(--border-radius-md)", fontSize: "13px", marginBottom: "1.25rem" }}>
+          {status.msg}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: "0", marginBottom: "1.5rem", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+        {tabs.map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
+            padding: "8px 18px", fontSize: "13px",
+            fontWeight: activeTab === tab.id ? 500 : 400,
+            color: activeTab === tab.id ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+            background: "transparent", border: "none",
+            borderBottom: activeTab === tab.id ? "2px solid var(--color-text-primary)" : "2px solid transparent",
+            cursor: "pointer", marginBottom: "-0.5px", whiteSpace: "nowrap"
+          }}>{tab.label}</button>
+        ))}
+      </div>
+
+      {activeTab === "upload" && (
+        <div>
+          <div style={{ marginBottom: "1.25rem" }}>
+            <label style={{ fontSize: "12px", color: "var(--color-text-secondary)", display: "block", marginBottom: "6px" }}>Select company</label>
+            <select value={selectedPeer} onChange={e => setSelectedPeer(e.target.value)}
+              style={{ padding: "8px 12px", fontSize: "14px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)", color: "var(--color-text-primary)", minWidth: "240px" }}>
+              {PEERS.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+
+          <div style={{ display: "flex", gap: "6px", marginBottom: "1.5rem" }}>
+            {[["single","Single year"], ["multi","Deep analysis (multi-year)"]].map(([mode, label]) => (
+              <button key={mode} onClick={() => setAnalysisMode(mode)} style={{
+                padding: "6px 16px", fontSize: "13px", borderRadius: "var(--border-radius-md)",
+                border: "0.5px solid var(--color-border-secondary)",
+                background: analysisMode === mode ? "var(--color-text-primary)" : "transparent",
+                color: analysisMode === mode ? "var(--color-background-primary)" : "var(--color-text-secondary)",
+                cursor: "pointer", fontWeight: analysisMode === mode ? 500 : 400
+              }}>{label}</button>
+            ))}
+          </div>
+
+          {analysisMode === "multi" ? (
+            <div>
+              {/* FINANCIAL ANALYSIS */}
+              <div style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem", marginBottom: "1.25rem" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+                  <div>
+                    <div style={{ fontSize: "14px", fontWeight: 500 }}>Financial Analysis</div>
+                    <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginTop: "2px" }}>Annual reports → Growth, Solidity, Liquidity, Profitability ratios + 3-year forecast</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "12px", color: "var(--color-text-tertiary)" }}>{Object.values(multiUrls).filter(v => v.trim().startsWith("http")).length}/4 loaded</span>
+                    <button onClick={runDeepAnalysis} disabled={loading || Object.values(multiUrls).filter(v => v.trim().startsWith("http")).length < 2}
+                      style={{ padding: "8px 20px", fontSize: "13px", background: Object.values(multiUrls).filter(v => v.trim().startsWith("http")).length >= 2 && !loading ? "var(--color-text-primary)" : "var(--color-background-primary)", color: Object.values(multiUrls).filter(v => v.trim().startsWith("http")).length >= 2 && !loading ? "var(--color-background-primary)" : "var(--color-text-tertiary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", cursor: "pointer", fontWeight: 500, whiteSpace: "nowrap" }}>
+                      {loading ? "Running..." : "Run Financial ↗"}
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "10px" }}>
+                  {[2025, 2024, 2023, 2022].map(year => (
+                    <div key={year} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontSize: "12px", fontWeight: 500, color: "var(--color-text-secondary)", minWidth: "36px" }}>{year}</span>
+                      <input type="text" value={multiUrls[year]} onChange={e => setMultiUrls(u => ({ ...u, [year]: e.target.value }))}
+                        placeholder={year === 2025 ? "optional" : `annual report ${year} URL`}
+                        style={{ flex: 1, padding: "7px 12px", fontSize: "11px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)", color: "var(--color-text-primary)", fontFamily: "var(--font-mono)" }} />
+                      {multiUrls[year] && <button onClick={() => setMultiUrls(u => ({ ...u, [year]: "" }))} style={{ fontSize: "11px", color: "var(--color-text-tertiary)", background: "none", border: "none", cursor: "pointer" }}>✕</button>}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  {[2025, 2024, 2023, 2022].map(year => {
+                    const links = { "Poste Italiane": { 2025: "https://www.posteitaliane.it/files/1476647337966/Annual-Report-2025.pdf", 2024: "https://www.posteitaliane.it/files/1476637295199/Annual-Report-2024-ENG.pdf", 2023: "https://www.posteitaliane.it/files/1476611806936/Annual-report-2023.pdf", 2022: "https://www.posteitaliane.it/files/1476584066849/Annual-Financial-Report-2022.pdf" }, "PostNL": { 2025: "https://annualreport.postnl.nl/app/uploads/2026/02/PostNL-Annual-Report-2025.pdf", 2024: "https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2024.pdf", 2023: "https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2023.pdf", 2022: "https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2022.pdf" }, "Bpost": { 2024: "https://bpostgroup.com/sites/default/files/2025-03/24099_BPOST_jaarverslag_2024_ENG.pdf", 2023: "https://bpostgroup.com/sites/default/files/2024-03/Annualreport2023_feb24_ENG_0.pdf", 2022: "https://bpostgroup.com/sites/default/files/2023-09/22118_BPOST_FinancieelJaarverslag2022_feb23_ENG.pdf" }, "Österreichische Post": { 2025: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2025.pdf", 2024: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2024.pdf", 2023: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2023.pdf", 2022: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2022.pdf" }, "InPost": { 2025: "https://inpost.eu/sites/default/files/2026-03/InPost_Group_IAR_2025_0.pdf", 2024: "https://inpost.eu/sites/default/files/2025-03/InPost%20Raport%202024s.pdf", 2023: "https://inpost.eu/sites/default/files/2024-03/IAR%20InPost%202023.pdf" } };
+                    const url = (links[selectedPeer] || {})[year];
+                    if (!url) return <span key={year} style={{ fontSize: "11px", color: "var(--color-text-tertiary)", padding: "2px 10px", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "12px" }}>{year} n/a</span>;
+                    const set = multiUrls[year] === url;
+                    return <button key={year} onClick={() => setMultiUrls(u => ({ ...u, [year]: url }))} style={{ fontSize: "11px", padding: "2px 10px", background: set ? "var(--color-background-success)" : "transparent", border: `0.5px solid ${set ? "var(--color-border-success)" : "var(--color-border-secondary)"}`, borderRadius: "12px", cursor: "pointer", color: set ? "var(--color-text-success)" : "var(--color-text-secondary)" }}>{set ? "✓ " : ""}{year}</button>;
+                  })}
+                  <button onClick={() => { const links = { "Poste Italiane": { 2025: "https://www.posteitaliane.it/files/1476647337966/Annual-Report-2025.pdf", 2024: "https://www.posteitaliane.it/files/1476637295199/Annual-Report-2024-ENG.pdf", 2023: "https://www.posteitaliane.it/files/1476611806936/Annual-report-2023.pdf", 2022: "https://www.posteitaliane.it/files/1476584066849/Annual-Financial-Report-2022.pdf" }, "PostNL": { 2025: "https://annualreport.postnl.nl/app/uploads/2026/02/PostNL-Annual-Report-2025.pdf", 2024: "https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2024.pdf", 2023: "https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2023.pdf", 2022: "https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2022.pdf" }, "Bpost": { 2024: "https://bpostgroup.com/sites/default/files/2025-03/24099_BPOST_jaarverslag_2024_ENG.pdf", 2023: "https://bpostgroup.com/sites/default/files/2024-03/Annualreport2023_feb24_ENG_0.pdf", 2022: "https://bpostgroup.com/sites/default/files/2023-09/22118_BPOST_FinancieelJaarverslag2022_feb23_ENG.pdf" }, "Österreichische Post": { 2025: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2025.pdf", 2024: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2024.pdf", 2023: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2023.pdf", 2022: "https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2022.pdf" }, "InPost": { 2025: "https://inpost.eu/sites/default/files/2026-03/InPost_Group_IAR_2025_0.pdf", 2024: "https://inpost.eu/sites/default/files/2025-03/InPost%20Raport%202024s.pdf", 2023: "https://inpost.eu/sites/default/files/2024-03/IAR%20InPost%202023.pdf" } }; setMultiUrls(u => ({ ...u, ...(links[selectedPeer] || {}) })); }} style={{ fontSize: "11px", padding: "2px 14px", background: "var(--color-text-primary)", color: "var(--color-background-primary)", border: "none", borderRadius: "12px", cursor: "pointer", fontWeight: 500 }}>Fill all</button>
+                </div>
+              </div>
+
+              {/* ESG / STRATEGIC ANALYSIS */}
+              <div style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+                  <div>
+                    <div style={{ fontSize: "14px", fontWeight: 500 }}>Strategic & ESG Analysis</div>
+                    <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginTop: "2px" }}>ESG / sustainability reports → Strategy, Environment, Social, Governance, Innovation, Market signals</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "12px", color: "var(--color-text-tertiary)" }}>{Object.values(esgUrls).filter(v => v.trim().startsWith("http")).length}/4 loaded</span>
+                    <button onClick={runEsgAnalysis} disabled={loading || Object.values(esgUrls).filter(v => v.trim().startsWith("http")).length < 1}
+                      style={{ padding: "8px 20px", fontSize: "13px", background: Object.values(esgUrls).filter(v => v.trim().startsWith("http")).length >= 1 && !loading ? "var(--color-text-primary)" : "var(--color-background-primary)", color: Object.values(esgUrls).filter(v => v.trim().startsWith("http")).length >= 1 && !loading ? "var(--color-background-primary)" : "var(--color-text-tertiary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", cursor: "pointer", fontWeight: 500, whiteSpace: "nowrap" }}>
+                      {loading ? "Running..." : "Run ESG ↗"}
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "10px" }}>
+                  {[2025, 2024, 2023, 2022].map(year => (
+                    <div key={year} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontSize: "12px", fontWeight: 500, color: "var(--color-text-secondary)", minWidth: "36px" }}>{year}</span>
+                      <input type="text" value={esgUrls[year]} onChange={e => setEsgUrls(u => ({ ...u, [year]: e.target.value }))}
+                        placeholder={year === 2025 ? "optional" : `ESG / sustainability report ${year} URL`}
+                        style={{ flex: 1, padding: "7px 12px", fontSize: "11px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)", color: "var(--color-text-primary)", fontFamily: "var(--font-mono)" }} />
+                      {esgUrls[year] && <button onClick={() => setEsgUrls(u => ({ ...u, [year]: "" }))} style={{ fontSize: "11px", color: "var(--color-text-tertiary)", background: "none", border: "none", cursor: "pointer" }}>✕</button>}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  {[2025, 2024, 2023, 2022].map(year => {
+                    const url = (ESG_LINKS[selectedPeer] || {})[year];
+                    if (!url) return <span key={year} style={{ fontSize: "11px", color: "var(--color-text-tertiary)", padding: "2px 10px", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "12px" }}>{year} n/a</span>;
+                    const set = esgUrls[year] === url;
+                    return <button key={year} onClick={() => setEsgUrls(u => ({ ...u, [year]: url }))} style={{ fontSize: "11px", padding: "2px 10px", background: set ? "var(--color-background-success)" : "transparent", border: `0.5px solid ${set ? "var(--color-border-success)" : "var(--color-border-secondary)"}`, borderRadius: "12px", cursor: "pointer", color: set ? "var(--color-text-success)" : "var(--color-text-secondary)" }}>{set ? "✓ " : ""}{year}</button>;
+                  })}
+                  <button onClick={() => { const pl = ESG_LINKS[selectedPeer] || {}; const filled = {}; Object.entries(pl).forEach(([y,u]) => { if (u) filled[y] = u; }); setEsgUrls(u => ({ ...u, ...filled })); }} style={{ fontSize: "11px", padding: "2px 14px", background: "var(--color-text-primary)", color: "var(--color-background-primary)", border: "none", borderRadius: "12px", cursor: "pointer", fontWeight: 500 }}>Fill all</button>
+                </div>
+                <div style={{ marginTop: "10px", fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
+                  Note: for peers without dedicated ESG reports (e.g. InPost, Bpost), the integrated annual reports are pre-loaded — they contain ESG sections.
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: "flex", gap: "6px", marginBottom: "1.25rem" }}>
+                {["url", "file"].map(mode => (
+                  <button key={mode} onClick={() => setInputMode(mode)} style={{
+                    padding: "6px 16px", fontSize: "13px", borderRadius: "var(--border-radius-md)",
+                    border: "0.5px solid var(--color-border-secondary)",
+                    background: inputMode === mode ? "var(--color-text-primary)" : "transparent",
+                    color: inputMode === mode ? "var(--color-background-primary)" : "var(--color-text-secondary)",
+                    cursor: "pointer", fontWeight: inputMode === mode ? 500 : 400
+                  }}>{mode === "url" ? "URL" : "Upload file"}</button>
+                ))}
+              </div>
+
+          {inputMode === "url" ? (
+            <div style={{ marginBottom: "1.5rem" }}>
+              <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "8px" }}>
+                Paste the direct PDF link — avoids size limits for large annual reports
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input type="text" value={pdfUrl} onChange={e => setPdfUrl(e.target.value)}
+                  placeholder="https://bpostgroup.com/sites/default/files/2025-03/..."
+                  style={{ flex: 1, padding: "10px 14px", fontSize: "12px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)", color: "var(--color-text-primary)", fontFamily: "var(--font-mono)" }} />
+                <button onClick={() => processViaUrl(pdfUrl)} disabled={loading || !pdfUrl}
+                  style={{ padding: "10px 20px", fontSize: "13px", background: pdfUrl && !loading ? "var(--color-text-primary)" : "var(--color-background-secondary)", color: pdfUrl && !loading ? "var(--color-background-primary)" : "var(--color-text-tertiary)", border: "none", borderRadius: "var(--border-radius-md)", cursor: pdfUrl && !loading ? "pointer" : "not-allowed", fontWeight: 500, whiteSpace: "nowrap" }}>
+                  {loading ? "Extracting..." : "Extract"}
+                </button>
+              </div>
+              <div style={{ marginTop: "1rem", background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px" }}>
+                <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", fontWeight: 500, marginBottom: "10px" }}>ANNUAL REPORTS 2022–2025</div>
+                {[
+                  ["Poste Italiane", [
+                    ["2025","Poste Italiane","https://www.posteitaliane.it/files/1476647337966/Annual-Report-2025.pdf"],
+                    ["2024","Poste Italiane","https://www.posteitaliane.it/files/1476637295199/Annual-Report-2024-ENG.pdf"],
+                    ["2023","Poste Italiane","https://www.posteitaliane.it/files/1476611806936/Annual-report-2023.pdf"],
+                    ["2022","Poste Italiane","https://www.posteitaliane.it/files/1476584066849/Annual-Financial-Report-2022.pdf"],
+                  ]],
+                  ["PostNL", [
+                    ["2025","PostNL","https://annualreport.postnl.nl/app/uploads/2026/02/PostNL-Annual-Report-2025.pdf"],
+                    ["2024","PostNL","https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2024.pdf"],
+                    ["2023","PostNL","https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2023.pdf"],
+                    ["2022","PostNL","https://annualreport.postnl.nl/app/uploads/2026/01/PostNL-Annual-Report-2022.pdf"],
+                  ]],
+                  ["Bpost", [
+                    ["2025","Bpost",null],
+                    ["2024","Bpost","https://bpostgroup.com/sites/default/files/2025-03/24099_BPOST_jaarverslag_2024_ENG.pdf"],
+                    ["2023","Bpost","https://bpostgroup.com/sites/default/files/2024-03/Annualreport2023_feb24_ENG_0.pdf"],
+                    ["2022","Bpost","https://bpostgroup.com/sites/default/files/2023-09/22118_BPOST_FinancieelJaarverslag2022_feb23_ENG.pdf"],
+                  ]],
+                  ["Österreichische Post", [
+                    ["2025","Österreichische Post","https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2025.pdf"],
+                    ["2024","Österreichische Post","https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2024.pdf"],
+                    ["2023","Österreichische Post","https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2023.pdf"],
+                    ["2022","Österreichische Post","https://assets.post.at/-/media/Dokumente/En/Investor-Relations/Geschaefts--und-Nachhaltigkeitsberichte/Austrian-Post-Annual-Report-2022.pdf"],
+                  ]],
+                  ["InPost", [
+                    ["2025","InPost","https://inpost.eu/sites/default/files/2026-03/InPost_Group_IAR_2025_0.pdf"],
+                    ["2024","InPost","https://inpost.eu/sites/default/files/2025-03/InPost%20Raport%202024s.pdf"],
+                    ["2023","InPost","https://inpost.eu/sites/default/files/2024-03/IAR%20InPost%202023.pdf"],
+                    ["2022","InPost",null],
+                  ]],
+                ].map(([company, docs]) => (
+                  <div key={company} style={{ marginBottom: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: PEER_COLORS[company] || "#888", display: "inline-block", flexShrink: 0 }}></span>
+                      <span style={{ fontSize: "11px", fontWeight: 500, color: "var(--color-text-primary)" }}>{company}</span>
+                    </div>
+                    {docs.map(([year, peer, url]) => (
+                      <div key={year} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0 4px 14px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                        <span style={{ fontSize: "12px", color: url ? "var(--color-text-secondary)" : "var(--color-text-tertiary)" }}>{year}{!url ? " — not yet published" : ""}</span>
+                        {url ? (
+                          <button onClick={() => { setPdfUrl(url); setSelectedPeer(peer); }}
+                            style={{ fontSize: "11px", padding: "2px 10px", background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "12px", cursor: "pointer", color: "var(--color-text-secondary)", whiteSpace: "nowrap", marginLeft: "8px", flexShrink: 0 }}>
+                            Use
+                          </button>
+                        ) : (
+                          <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginLeft: "8px" }}>—</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div
+                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={e => { e.preventDefault(); setDragOver(false); processFile(e.dataTransfer.files[0]); }}
+                onClick={() => !loading && fileInputRef.current?.click()}
+                style={{ border: `1.5px dashed ${dragOver ? "var(--color-border-info)" : "var(--color-border-secondary)"}`, borderRadius: "var(--border-radius-lg)", padding: "2.5rem 2rem", textAlign: "center", cursor: loading ? "wait" : "pointer", background: dragOver ? "var(--color-background-info)" : "var(--color-background-secondary)", transition: "all 0.15s", marginBottom: "0.5rem" }}>
+                <div style={{ fontSize: "24px", marginBottom: "8px" }}>📄</div>
+                <div style={{ fontSize: "14px", fontWeight: 500, color: "var(--color-text-primary)", marginBottom: "4px" }}>Drop PDF here, or click to browse</div>
+                <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)" }}>Best for small files under 10MB · Switch to URL mode for large annual reports</div>
+              </div>
+              <input ref={fileInputRef} type="file" accept=".pdf" style={{ display: "none" }} onChange={e => { processFile(e.target.files[0]); e.target.value = ""; }} />
+            </>
+          )}
+            </div>
+          )}
+
+          {analysisMode === "single" && extractionResult && (
+            <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+                <div>
+                  <div style={{ fontSize: "15px", fontWeight: 500 }}>{extractionResult.company} · {extractionResult.year}</div>
+                  <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{extractionResult.document_type} · {extractionResult.source_period}</div>
+                </div>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button onClick={() => setExtractionResult(null)} style={{ padding: "8px 16px", fontSize: "13px", background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", cursor: "pointer", color: "var(--color-text-secondary)" }}>Discard</button>
+                  <button onClick={saveRecord} style={{ padding: "8px 20px", fontSize: "13px", background: "var(--color-text-primary)", color: "var(--color-background-primary)", border: "none", borderRadius: "var(--border-radius-md)", cursor: "pointer", fontWeight: 500 }}>Save to database</button>
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "8px", marginBottom: "1rem" }}>
+                {[
+                  ["Segment Revenue", extractionResult.segment_revenue_m != null ? `€${extractionResult.segment_revenue_m.toLocaleString()}M` : extractionResult.revenue_m != null ? `€${extractionResult.revenue_m.toLocaleString()}M*` : "—"],
+                  ["Seg. EBIT Margin", (extractionResult.segment_ebit_margin_pct ?? extractionResult.ebit_margin_pct) != null ? `${extractionResult.segment_ebit_margin_pct ?? extractionResult.ebit_margin_pct}%` : "—"],
+                  ["Parcel Growth", extractionResult.parcel_growth_pct != null ? `${extractionResult.parcel_growth_pct > 0 ? "+" : ""}${extractionResult.parcel_growth_pct}%` : "—"],
+                  ["Mail Vol. Δ", extractionResult.mail_volume_decline_pct != null ? `${extractionResult.mail_volume_decline_pct}%` : "—"],
+                ].map(([label, val]) => (
+                  <div key={label} style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 12px" }}>
+                    <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "4px" }}>{label}</div>
+                    <div style={{ fontSize: "17px", fontWeight: 500 }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              {extractionResult.segment_name && (
+                <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "10px" }}>
+                  Segment: <span style={{ color: "var(--color-text-secondary)", fontWeight: 500 }}>{extractionResult.segment_name}</span>
+                  {!extractionResult.segment_available && <span style={{ color: "var(--color-text-warning)", marginLeft: "8px" }}>· group-level data used</span>}
+                </div>
+              )}
+
+              {extractionResult.strategic_priorities?.length > 0 && (
+                <div style={{ marginBottom: "10px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "6px", fontWeight: 500 }}>STRATEGIC PRIORITIES</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                    {extractionResult.strategic_priorities.map((p, i) => (
+                      <span key={i} style={{ fontSize: "12px", padding: "3px 10px", background: "var(--color-background-secondary)", borderRadius: "20px", color: "var(--color-text-secondary)" }}>{p}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {extractionResult.competitive_signals?.length > 0 && (
+                <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: "10px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "6px", fontWeight: 500 }}>COMPETITIVE SIGNALS</div>
+                  {extractionResult.competitive_signals.map((s, i) => (
+                    <div key={i} style={{ fontSize: "13px", padding: "4px 0", color: "var(--color-text-primary)" }}>· {s}</div>
+                  ))}
+                </div>
+              )}
+
+              {extractionResult.ai_tech_highlights && (
+                <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: "10px", marginTop: "6px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "4px", fontWeight: 500 }}>AI & TECH</div>
+                  <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>{extractionResult.ai_tech_highlights}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "deep" && (
+        <div>
+          <div style={{ display: "flex", gap: "8px", marginBottom: "1rem", flexWrap: "wrap", alignItems: "center" }}>
+            {PEERS.map(peer => {
+              const hasF = !!deepAnalysis[peer];
+              const hasE = !!esgAnalysis[peer];
+              const isActive = deepAnalysisPeer === peer;
+              return (
+                <button key={peer} onClick={() => { setDeepAnalysisPeer(peer); if (!hasF && hasE) setDeepTab("esg"); else setDeepTab("financial"); }}
+                  style={{ fontSize: "12px", padding: "5px 12px", borderRadius: "var(--border-radius-md)", border: `0.5px solid ${isActive ? "var(--color-border-primary)" : "var(--color-border-secondary)"}`, background: isActive ? "var(--color-text-primary)" : (hasF || hasE) ? "var(--color-background-secondary)" : "transparent", color: isActive ? "var(--color-background-primary)" : (hasF || hasE) ? "var(--color-text-primary)" : "var(--color-text-tertiary)", cursor: (hasF || hasE) ? "pointer" : "default", display: "flex", alignItems: "center", gap: "5px" }}>
+                  <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: (hasF || hasE) ? PEER_COLORS[peer] : "var(--color-text-tertiary)", display: "inline-block" }}></span>
+                  {peer.split(" ")[0]}
+                  {(hasF || hasE) && <span style={{ fontSize: "10px", opacity: 0.7 }}>{hasF ? "F" : ""}{hasE ? "E" : ""}</span>}
+                </button>
+              );
+            })}
+            <button onClick={() => { setDeepTab("financial"); setActiveTab("upload"); setAnalysisMode("multi"); }} style={{ fontSize: "12px", padding: "5px 12px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", marginLeft: "auto" }}>+ Add ↗</button>
+          </div>
+
+          {deepAnalysisPeer && (
+            <div style={{ display: "flex", gap: "6px", marginBottom: "1.25rem" }}>
+              {[["financial", "Financial"], ["esg", "Strategic & ESG"]].map(([id, label]) => {
+                const has = id === "financial" ? !!deepAnalysis[deepAnalysisPeer] : !!esgAnalysis[deepAnalysisPeer];
+                return (
+                  <button key={id} onClick={() => has && setDeepTab(id)}
+                    style={{ padding: "6px 16px", fontSize: "13px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: deepTab === id ? "var(--color-text-primary)" : "transparent", color: deepTab === id ? "var(--color-background-primary)" : has ? "var(--color-text-secondary)" : "var(--color-text-tertiary)", cursor: has ? "pointer" : "default", fontWeight: deepTab === id ? 500 : 400 }}>
+                    {label}{!has ? " —" : ""}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {!deepAnalysisPeer ? (
+            <div style={{ textAlign: "center", padding: "4rem 2rem", color: "var(--color-text-tertiary)", fontSize: "14px" }}>
+              No analyses yet. Go to Upload & Extract → select "Deep analysis (multi-year)" → run Financial and/or ESG.
+            </div>
+          ) : (
+            (() => {
+              const data = deepTab === "financial" ? deepAnalysis[deepAnalysisPeer] : esgAnalysis[deepAnalysisPeer];
+              if (!data) return (
+                <div style={{ textAlign: "center", padding: "3rem 2rem", color: "var(--color-text-tertiary)", fontSize: "14px" }}>
+                  No {deepTab === "financial" ? "financial" : "ESG"} analysis for {deepAnalysisPeer} yet. Go to Upload & Extract to run it.
+                </div>
+              );
+              return (
+                <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "1.5rem" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", paddingBottom: "1rem", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: PEER_COLORS[deepAnalysisPeer] || "#888", display: "inline-block" }}></span>
+                        <span style={{ fontSize: "14px", fontWeight: 500 }}>{deepAnalysisPeer}</span>
+                        <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", padding: "2px 8px", background: "var(--color-background-secondary)", borderRadius: "10px" }}>{deepTab === "financial" ? "Financial" : "Strategic & ESG"}</span>
+                      </div>
+                      <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginTop: "3px" }}>
+                        Years: {data.years?.join(", ")} · {new Date(data.generatedAt).toLocaleDateString("it-IT")}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button onClick={() => navigator.clipboard?.writeText(data.text || "")} style={{ fontSize: "12px", padding: "6px 12px", background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", cursor: "pointer", color: "var(--color-text-secondary)" }}>Copy</button>
+                      <button onClick={() => { const s = deepTab === "financial"; const n = s ? { ...deepAnalysis } : { ...esgAnalysis }; delete n[deepAnalysisPeer]; if (s) { setDeepAnalysis(n); window.storage.set("ci_deep_analyses", JSON.stringify(n)).catch(()=>{}); } else { setEsgAnalysis(n); window.storage.set("ci_esg_analyses", JSON.stringify(n)).catch(()=>{}); } }} style={{ fontSize: "12px", padding: "6px 12px", background: "transparent", border: "0.5px solid var(--color-border-danger)", borderRadius: "var(--border-radius-md)", cursor: "pointer", color: "var(--color-text-danger)" }}>Delete</button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: "14px", lineHeight: "1.8", color: "var(--color-text-primary)", whiteSpace: "pre-wrap" }}>
+                    {data.text}
+                  </div>
+                </div>
+              );
+            })()
+          )}
+        </div>
+      )}
+
+      {activeTab === "database" && (
+        <div>
+          {database.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "1rem" }}>
+              <button onClick={() => { if (window.confirm("Clear all records and start fresh?")) clearDatabase(); }}
+                style={{ fontSize: "12px", padding: "6px 14px", background: "transparent", border: "0.5px solid var(--color-border-danger)", borderRadius: "var(--border-radius-md)", cursor: "pointer", color: "var(--color-text-danger)" }}>
+                Clear all records
+              </button>
+            </div>
+          )}
+          {database.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "4rem 2rem", color: "var(--color-text-tertiary)", fontSize: "14px" }}>
+              No records yet. Go to Upload & Extract to add your first competitor document.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                <thead>
+                  <tr style={{ borderBottom: "0.5px solid var(--color-border-secondary)" }}>
+                    {["Company","Year","Segment Revenue","Seg. Growth","Seg. EBIT Margin","Parcel Vol.","Mail Vol. Δ","Seg. Available",""].map(h => (
+                      <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontSize: "11px", color: "var(--color-text-tertiary)", fontWeight: 500, whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {database.map((r, i) => (
+                    <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                      <td style={{ padding: "10px 10px", fontWeight: 500, whiteSpace: "nowrap" }}>
+                        <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: PEER_COLORS[r.company] || "#888", marginRight: "8px", flexShrink: 0 }}></span>
+                        {r.company}
+                      </td>
+                      <td style={{ padding: "10px 10px", color: "var(--color-text-secondary)" }}>{r.year}</td>
+                      <td style={{ padding: "10px 10px" }}>{r.segment_revenue_m != null ? `€${r.segment_revenue_m.toLocaleString()}M` : r.revenue_m != null ? `€${r.revenue_m.toLocaleString()}M*` : "—"}</td>
+                      <td style={{ padding: "10px 10px", color: (r.segment_revenue_growth_pct ?? r.revenue_growth_pct) > 0 ? "var(--color-text-success)" : (r.segment_revenue_growth_pct ?? r.revenue_growth_pct) < 0 ? "var(--color-text-danger)" : "inherit" }}>
+                        {(r.segment_revenue_growth_pct ?? r.revenue_growth_pct) != null ? `${(r.segment_revenue_growth_pct ?? r.revenue_growth_pct) > 0 ? "+" : ""}${(r.segment_revenue_growth_pct ?? r.revenue_growth_pct)}%` : "—"}
+                      </td>
+                      <td style={{ padding: "10px 10px" }}>{(r.segment_ebit_margin_pct ?? r.ebit_margin_pct) != null ? `${(r.segment_ebit_margin_pct ?? r.ebit_margin_pct)}%` : "—"}</td>
+                      <td style={{ padding: "10px 10px" }}>{r.parcel_volume_m != null ? `${r.parcel_volume_m}M` : "—"}</td>
+                      <td style={{ padding: "10px 10px", color: r.mail_volume_decline_pct < 0 ? "var(--color-text-danger)" : "var(--color-text-secondary)" }}>
+                        {r.mail_volume_decline_pct != null ? `${r.mail_volume_decline_pct}%` : "—"}
+                      </td>
+                      <td style={{ padding: "10px 10px" }}>
+                        <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "10px", background: r.segment_available ? "var(--color-background-success)" : "var(--color-background-warning)", color: r.segment_available ? "var(--color-text-success)" : "var(--color-text-warning)" }}>
+                          {r.segment_available ? "yes" : "group"}
+                        </span>
+                      </td>
+                      <td style={{ padding: "10px 10px" }}>
+                        <button onClick={() => deleteRecord(r.company, r.year)} style={{ fontSize: "12px", color: "var(--color-text-danger)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>Remove</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginTop: "6px" }}>* group-level data used where segment not available</div>
+
+              <div style={{ marginTop: "2rem" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginBottom: "1rem", fontWeight: 500 }}>COMPETITIVE SIGNALS BY COMPANY</div>
+                {database.filter(r => r.competitive_signals?.length > 0).map((r, i) => (
+                  <div key={i} style={{ marginBottom: "1rem", background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+                      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: PEER_COLORS[r.company] || "#888", flexShrink: 0, display: "inline-block" }}></span>
+                      <span style={{ fontSize: "13px", fontWeight: 500 }}>{r.company} ({r.year})</span>
+                    </div>
+                    {r.competitive_signals.map((s, j) => (
+                      <div key={j} style={{ fontSize: "12px", color: "var(--color-text-secondary)", padding: "2px 0 2px 16px" }}>· {s}</div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "analysis" && (
+        <div>
+          {database.length >= 2 && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "1rem" }}>
+              <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "var(--color-text-success)", display: "inline-block" }}></span>
+              <span style={{ fontSize: "11px", color: "var(--color-text-success)" }}>Live — always reflects current database ({database.length} records)</span>
+            </div>
+          )}
+          {database.length < 2 ? (
+            <div style={{ textAlign: "center", padding: "4rem 2rem", color: "var(--color-text-tertiary)", fontSize: "14px" }}>
+              Add at least 2 companies to the database to see comparisons.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "2.5rem" }}>
+              <div>
+                <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginBottom: "12px", fontWeight: 500 }}>MAIL & PARCEL SEGMENT REVENUE (€M) — LATEST YEAR</div>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={barData} margin={{ top: 0, right: 10, bottom: 20, left: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-tertiary)" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
+                    <YAxis tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
+                    <Tooltip formatter={v => [`€${Number(v).toLocaleString()}M`, "Segment Revenue"]} contentStyle={{ fontSize: "12px" }} />
+                    <Bar dataKey="revenue" name="Segment Revenue €M" radius={[3, 3, 0, 0]}>
+                      {barData.map((entry, i) => null)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div>
+                <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginBottom: "12px", fontWeight: 500 }}>SEGMENT EBIT MARGIN (%) — LATEST YEAR</div>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={barData} margin={{ top: 0, right: 10, bottom: 20, left: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-tertiary)" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
+                    <YAxis tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
+                    <Tooltip formatter={v => [`${Number(v).toFixed(1)}%`, "EBIT Margin"]} contentStyle={{ fontSize: "12px" }} />
+                    <Bar dataKey="ebit_margin" name="EBIT Margin %" fill="#10B981" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div>
+                <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginBottom: "12px", fontWeight: 500 }}>PARCEL VOLUME GROWTH (%) — MAIL→PARCEL STRUCTURAL SHIFT</div>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={barData} margin={{ top: 0, right: 10, bottom: 20, left: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-tertiary)" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
+                    <YAxis tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
+                    <Tooltip formatter={(v, name) => [`${Number(v).toFixed(1)}%`, name]} contentStyle={{ fontSize: "12px" }} />
+                    <Legend wrapperStyle={{ fontSize: "11px" }} />
+                    <Bar dataKey="parcel_growth" name="Parcel growth %" fill="#60A5FA" radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="mail_decline" name="Mail vol. change %" fill="#F87171" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginBottom: "12px", fontWeight: 500 }}>AI & TECHNOLOGY HIGHLIGHTS BY PEER</div>
+                {database.filter(r => r.ai_tech_highlights).map((r, i) => (
+                  <div key={i} style={{ marginBottom: "10px", paddingBottom: "10px", borderBottom: i < database.filter(x => x.ai_tech_highlights).length - 1 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                    <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "4px" }}>
+                      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: PEER_COLORS[r.company] || "#888", display: "inline-block", flexShrink: 0 }}></span>
+                      <span style={{ fontSize: "12px", fontWeight: 500 }}>{r.company}</span>
+                    </div>
+                    <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", paddingLeft: "16px" }}>{r.ai_tech_highlights}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "forecast" && (
+        <div>
+          {forecast && forecastDbVersion !== dbVersion && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--color-background-warning)", border: "0.5px solid var(--color-border-warning)", borderRadius: "var(--border-radius-md)", padding: "10px 14px", marginBottom: "1rem" }}>
+              <span style={{ fontSize: "13px", color: "var(--color-text-warning)" }}>Database has changed — this forecast is outdated.</span>
+              <button onClick={generateForecast} disabled={loading} style={{ fontSize: "12px", padding: "5px 14px", background: "transparent", border: "0.5px solid var(--color-border-warning)", borderRadius: "var(--border-radius-md)", cursor: "pointer", color: "var(--color-text-warning)", whiteSpace: "nowrap", marginLeft: "12px" }}>
+                Regenerate ↻
+              </button>
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "1.5rem" }}>
+            <button onClick={generateForecast} disabled={loading || database.length === 0}
+              style={{ padding: "10px 24px", fontSize: "14px", background: database.length > 0 && !loading ? "var(--color-text-primary)" : "var(--color-background-secondary)", color: database.length > 0 && !loading ? "var(--color-background-primary)" : "var(--color-text-tertiary)", border: "none", borderRadius: "var(--border-radius-md)", cursor: database.length > 0 && !loading ? "pointer" : "not-allowed", fontWeight: 500 }}>
+              {loading ? "Generating..." : "Generate scenarios with Claude"}
+            </button>
+            {database.length === 0 && <span style={{ fontSize: "12px", color: "var(--color-text-tertiary)" }}>Add peer data to the database first</span>}
+            {database.length > 0 && !forecast && <span style={{ fontSize: "12px", color: "var(--color-text-tertiary)" }}>Based on {database.length} peer record{database.length > 1 ? "s" : ""}</span>}
+          </div>
+
+          {forecast && (
+            <div>
+              <div style={{ background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "1rem", marginBottom: "1.5rem" }}>
+                <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "8px", fontWeight: 500 }}>KEY ASSUMPTIONS</div>
+                {forecast.key_assumptions?.map((a, i) => (
+                  <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "2px 0" }}>· {a}</div>
+                ))}
+                {forecast.peer_insights?.length > 0 && (
+                  <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                    <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "6px", fontWeight: 500 }}>INSIGHTS FROM PEERS</div>
+                    {forecast.peer_insights?.map((a, i) => (
+                      <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "2px 0" }}>· {a}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "12px", marginBottom: "1.5rem" }}>
+                {[
+                  { key: "worst", borderColor: "var(--color-border-danger)", labelColor: "var(--color-text-danger)" },
+                  { key: "neutral", borderColor: "var(--color-border-tertiary)", labelColor: "var(--color-text-secondary)" },
+                  { key: "best", borderColor: "var(--color-border-success)", labelColor: "var(--color-text-success)" },
+                ].map(({ key, borderColor, labelColor }) => {
+                  const s = forecast.scenarios?.[key];
+                  if (!s) return null;
+                  return (
+                    <div key={key} style={{ background: "var(--color-background-primary)", border: `0.5px solid ${borderColor}`, borderRadius: "var(--border-radius-lg)", padding: "1rem" }}>
+                      <div style={{ fontSize: "11px", color: labelColor, fontWeight: 500, marginBottom: "4px" }}>{s.label}</div>
+                      <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginBottom: "14px", lineHeight: 1.5 }}>{s.description}</div>
+                      <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "2px" }}>Revenue 2028</div>
+                      <div style={{ fontSize: "22px", fontWeight: 500, marginBottom: "4px" }}>€{s.revenues?.["2028"]?.toLocaleString()}M</div>
+                      <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "12px" }}>EBIT margin: {s.ebit_margin_2028}%</div>
+                      <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: "10px" }}>
+                        {s.key_drivers?.map((d, i) => (
+                          <div key={i} style={{ fontSize: "11px", color: "var(--color-text-tertiary)", padding: "2px 0" }}>· {d}</div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {forecastChartData.length > 0 && (
+                <div>
+                  <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginBottom: "12px", fontWeight: 500 }}>REVENUE TRAJECTORY 2025–2028 (€M)</div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <LineChart data={forecastChartData} margin={{ top: 0, right: 20, bottom: 0, left: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-tertiary)" />
+                      <XAxis dataKey="year" tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
+                      <YAxis tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
+                      <Tooltip formatter={v => `€${Number(v).toLocaleString()}M`} contentStyle={{ fontSize: "12px" }} />
+                      <Legend wrapperStyle={{ fontSize: "12px" }} />
+                      <Line type="monotone" dataKey="Worst Case" stroke="#EF4444" strokeWidth={2} dot={{ r: 3 }} />
+                      <Line type="monotone" dataKey="Neutral Case" stroke="#6B7280" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="4 2" />
+                      <Line type="monotone" dataKey="Best Case" stroke="#10B981" strokeWidth={2} dot={{ r: 3 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "briefing" && (
+        <div>
+          {briefing && briefingDbVersion !== dbVersion && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--color-background-warning)", border: "0.5px solid var(--color-border-warning)", borderRadius: "var(--border-radius-md)", padding: "10px 14px", marginBottom: "1rem" }}>
+              <span style={{ fontSize: "13px", color: "var(--color-text-warning)" }}>Database has changed — this briefing is outdated.</span>
+              <button onClick={generateBriefing} disabled={loading} style={{ fontSize: "12px", padding: "5px 14px", background: "transparent", border: "0.5px solid var(--color-border-warning)", borderRadius: "var(--border-radius-md)", cursor: "pointer", color: "var(--color-text-warning)", whiteSpace: "nowrap", marginLeft: "12px" }}>
+                Regenerate ↻
+              </button>
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "1.5rem" }}>
+            <button onClick={generateBriefing} disabled={loading || database.length === 0}
+              style={{ padding: "10px 24px", fontSize: "14px", background: database.length > 0 && !loading ? "var(--color-text-primary)" : "var(--color-background-secondary)", color: database.length > 0 && !loading ? "var(--color-background-primary)" : "var(--color-text-tertiary)", border: "none", borderRadius: "var(--border-radius-md)", cursor: database.length > 0 && !loading ? "pointer" : "not-allowed", fontWeight: 500 }}>
+              {loading ? "Generating..." : "Generate executive briefing"}
+            </button>
+            {database.length === 0 && <span style={{ fontSize: "12px", color: "var(--color-text-tertiary)" }}>Add peer data first</span>}
+          </div>
+
+          {briefing && (
+            <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "1.5rem" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", paddingBottom: "1rem", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 500 }}>Competitive Intelligence Briefing</div>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginTop: "2px" }}>
+                    Poste Italiane IR Team · {new Date().toLocaleDateString("it-IT", { day: "2-digit", month: "long", year: "numeric" })} · Confidential
+                  </div>
+                </div>
+                <button onClick={() => navigator.clipboard?.writeText(briefing)}
+                  style={{ fontSize: "12px", padding: "6px 12px", background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", cursor: "pointer", color: "var(--color-text-secondary)" }}>
+                  Copy
+                </button>
+              </div>
+              <div style={{ fontSize: "14px", lineHeight: "1.75", color: "var(--color-text-primary)", whiteSpace: "pre-wrap" }}>
+                {briefing}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function AppWithApiKey() {
+  const [apiKey, setApiKey] = React.useState(() => { try{return localStorage.getItem('ci_api_key')||'';}catch{return '';} });
+  const [inputKey, setInputKey] = React.useState('');
+  const [error, setError] = React.useState('');
+  const [testing, setTesting] = React.useState(false);
+  const handleSave = async () => {
+    const key = inputKey.trim();
+    if (!key.startsWith('sk-ant-')) { setError('Key must start with sk-ant-'); return; }
+    setTesting(true); setError('');
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method:'POST', headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01'},
+        body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:10,messages:[{role:'user',content:'hi'}]})
+      });
+      if(res.status===401){setError('Chiave non valida.');return;}
+      localStorage.setItem('ci_api_key',key); setApiKey(key);
+    } catch(e){setError('Errore: '+e.message);} finally{setTesting(false);}
+  };
+  useEffect(()=>{
+    if(!apiKey) return;
+    const orig = window._oFetch||fetch;
+    window._oFetch = orig;
+    window.fetch=(url,opts={})=>{
+      if(typeof url==='string'&&url.includes('api.anthropic.com'))
+        opts={...opts,headers:{...(opts.headers||{}),'x-api-key':apiKey,'anthropic-version':'2023-06-01'}};
+      return orig(url,opts);
+    };
+    return ()=>{ window.fetch=window._oFetch; };
+  },[apiKey]);
+  if(!apiKey) return (
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--color-background-tertiary)',padding:'1rem'}}>
+      <div style={{background:'var(--color-background-primary)',border:'0.5px solid var(--color-border-secondary)',borderRadius:'16px',padding:'2.5rem',width:'100%',maxWidth:'440px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'1.5rem'}}>
+          <div style={{width:'28px',height:'28px',background:'#FFD700',borderRadius:'6px',display:'flex',alignItems:'center',justifyContent:'center'}}>
+            <span style={{fontSize:'12px',fontWeight:700,color:'#1a1a1a'}}>PI</span>
+          </div>
+          <div>
+            <div style={{fontSize:'15px',fontWeight:500,color:'var(--color-text-primary)'}}>Competitive Intelligence Radar</div>
+            <div style={{fontSize:'11px',color:'var(--color-text-tertiary)'}}>Poste Italiane · Mail & Parcel · Bocconi 2026</div>
+          </div>
+        </div>
+        <p style={{fontSize:'13px',color:'var(--color-text-secondary)',marginBottom:'1.25rem',lineHeight:1.6}}>
+          Inserisci la tua Anthropic API key per usare il tool. Salvata solo nel tuo browser.
+        </p>
+        <div style={{fontSize:'12px',color:'var(--color-text-secondary)',marginBottom:'8px'}}>
+          Chiave gratuita su <a href="https://console.anthropic.com" target="_blank" style={{color:'var(--color-text-info)'}}>console.anthropic.com</a>
+        </div>
+        <input type="password" value={inputKey} onChange={e=>{setInputKey(e.target.value);setError('');}}
+          onKeyDown={e=>e.key==='Enter'&&!testing&&handleSave()} placeholder="sk-ant-api03-..."
+          style={{width:'100%',padding:'10px 14px',marginBottom:'10px',fontSize:'13px',fontFamily:'monospace',borderRadius:'8px',border:'0.5px solid var(--color-border-secondary)'}}/>
+        {error&&<div style={{fontSize:'12px',color:'var(--color-text-danger)',marginBottom:'10px'}}>{error}</div>}
+        <button onClick={handleSave} disabled={testing||!inputKey}
+          style={{width:'100%',padding:'10px',fontSize:'14px',fontWeight:500,border:'none',borderRadius:'8px',cursor:inputKey&&!testing?'pointer':'not-allowed',
+            background:inputKey&&!testing?'var(--color-text-primary)':'var(--color-background-secondary)',
+            color:inputKey&&!testing?'var(--color-background-primary)':'var(--color-text-tertiary)'}}>
+          {testing?'Verifico...':'Salva chiave ed entra'}
+        </button>
+      </div>
+    </div>
+  );
+  return (
+    <div style={{padding:'1rem',maxWidth:'960px',margin:'0 auto'}}>
+      <div style={{display:'flex',justifyContent:'flex-end',marginBottom:'4px'}}>
+        <button onClick={()=>{localStorage.removeItem('ci_api_key');setApiKey('');}}
+          style={{fontSize:'11px',color:'var(--color-text-tertiary)',background:'none',border:'none',cursor:'pointer'}}>
+          Cambia API key
+        </button>
+      </div>
+      <App/>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<AppWithApiKey/>);
+</script>
+</body>
+</html>
